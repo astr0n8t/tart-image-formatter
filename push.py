@@ -76,7 +76,7 @@ LAYER_LIMIT_BYTES = 512 * 1024 * 1024  # 512 MiB per OCI layer
 # The stream ends with a single 4-byte LZFSE_ENDOFSTREAM_MAGIC word.
 #
 # IMPORTANT — block size:
-# Apple's Compression framework processes data in 65 536-byte (64 KiB) blocks
+# Apple's Compression framework processes data in 65536-byte (64 KiB) blocks
 # internally, matching the default ``bufferCapacity`` of ``OutputFilter``.
 # tart's pull path uses ``OutputFilter(.decompress, using: .lz4,
 # bufferCapacity: 4 MiB)``, meaning it allocates a 4 MiB output buffer and
@@ -127,8 +127,8 @@ def apple_lz4_compress(data: bytes) -> bytes:
     """
     payload = bytearray()
 
-    for i in range(0, len(data), APPLE_LZ4_BLOCK_SIZE):
-        block = data[i:i + APPLE_LZ4_BLOCK_SIZE]
+    for block_start in range(0, len(data), APPLE_LZ4_BLOCK_SIZE):
+        block = data[block_start:block_start + APPLE_LZ4_BLOCK_SIZE]
         compressed = lz4.block.compress(block, store_size=False)
 
         if len(compressed) < len(block):
