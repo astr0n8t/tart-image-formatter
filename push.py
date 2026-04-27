@@ -53,27 +53,30 @@ LAYER_LIMIT_BYTES = 512 * 1024 * 1024  # 512 MiB per OCI layer
 # ---------------------------------------------------------------------------
 # Apple LZ4 framing format constants
 #
-# Apple's Compression framework uses a custom stream framing format that
-# wraps raw LZ4 blocks.  The format is documented in the LZFSE open-source
-# library (https://github.com/lzfse/lzfse) inside lzfse_internal.h.
+# Apple's Compression framework uses a custom stream framing format when
+# compressing data with Algorithm.lz4.  The format is documented in the
+# Apple developer documentation for the Compression framework:
+# https://developer.apple.com/documentation/compression/algorithm/lz4
 #
-# Each block begins with a 4-byte magic number (little-endian uint32):
-#   LZ4_BLOCK_MAGIC       = 0x184D2204  — compressed LZ4 block
-#   LZFSE_UNCOMPRESSED_MAGIC = 0x2D787662  — uncompressed ("bvx-")
-#   LZFSE_ENDOFSTREAM_MAGIC  = 0x24787662  — end of stream ("bvx$")
+# Each block begins with a 4-byte magic number (little-endian uint32).
+# All three magic words share the prefix bytes 0x62, 0x76, 0x34 ("bv4"):
+#   LZ4_COMPRESSED_MAGIC   = 0x31347662  — compressed LZ4 block   ("bv41")
+#   LZ4_UNCOMPRESSED_MAGIC = 0x2D347662  — uncompressed block      ("bv4-")
+#   LZ4_ENDOFSTREAM_MAGIC  = 0x24347662  — end of stream           ("bv4$")
 #
-# A compressed block header (lz4_block_header, 12 bytes total):
-#   uint32_t magic            (LZ4_BLOCK_MAGIC)
+# A compressed block header (12 bytes total):
+#   uint32_t magic            (LZ4_COMPRESSED_MAGIC, octets 0x62 0x76 0x34 0x31)
 #   uint32_t n_raw_bytes      (uncompressed size, LE)
 #   uint32_t n_payload_bytes  (compressed size, LE)
 # followed immediately by n_payload_bytes of raw LZ4 block data.
 #
 # An uncompressed block header (8 bytes):
-#   uint32_t magic        (LZFSE_UNCOMPRESSED_MAGIC)
+#   uint32_t magic        (LZ4_UNCOMPRESSED_MAGIC, octets 0x62 0x76 0x34 0x2d)
 #   uint32_t n_raw_bytes  (data size, LE)
 # followed immediately by n_raw_bytes of raw data.
 #
-# The stream ends with a single 4-byte LZFSE_ENDOFSTREAM_MAGIC word.
+# The stream ends with a single 4-byte LZ4_ENDOFSTREAM_MAGIC word
+# (octets 0x62 0x76 0x34 0x24).  No data follows this marker.
 #
 # IMPORTANT — block size:
 # Apple's Compression framework processes data in 65536-byte (64 KiB) blocks
@@ -85,9 +88,9 @@ LAYER_LIMIT_BYTES = 512 * 1024 * 1024  # 512 MiB per OCI layer
 # ``Compression.FilterError``.  We therefore cap each block at
 # APPLE_LZ4_BLOCK_SIZE bytes to stay well within that limit.
 # ---------------------------------------------------------------------------
-LZ4_BLOCK_MAGIC = 0x184D2204
-LZFSE_UNCOMPRESSED_MAGIC = 0x2D787662
-LZFSE_ENDOFSTREAM_MAGIC = 0x24787662
+LZ4_COMPRESSED_MAGIC = 0x31347662    # octets: 0x62 0x76 0x34 0x31 ("bv41")
+LZ4_UNCOMPRESSED_MAGIC = 0x2D347662  # octets: 0x62 0x76 0x34 0x2d ("bv4-")
+LZ4_ENDOFSTREAM_MAGIC = 0x24347662   # octets: 0x62 0x76 0x34 0x24 ("bv4$")
 
 # Maximum uncompressed bytes per Apple LZ4 block.  This matches Apple's
 # Compression framework's default ``OutputFilter`` ``bufferCapacity``.
@@ -133,15 +136,15 @@ def apple_lz4_compress(data: bytes) -> bytes:
 
         if len(compressed) < len(block):
             # LZ4-compressed block
-            payload += struct.pack("<III", LZ4_BLOCK_MAGIC, len(block), len(compressed))
+            payload += struct.pack("<III", LZ4_COMPRESSED_MAGIC, len(block), len(compressed))
             payload += compressed
         else:
             # Uncompressed block — LZ4 did not help
-            payload += struct.pack("<II", LZFSE_UNCOMPRESSED_MAGIC, len(block))
+            payload += struct.pack("<II", LZ4_UNCOMPRESSED_MAGIC, len(block))
             payload += block
 
     # Append end-of-stream marker
-    payload += struct.pack("<I", LZFSE_ENDOFSTREAM_MAGIC)
+    payload += struct.pack("<I", LZ4_ENDOFSTREAM_MAGIC)
     return bytes(payload)
 
 
