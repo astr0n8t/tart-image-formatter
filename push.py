@@ -74,10 +74,24 @@ LAYER_LIMIT_BYTES = 512 * 1024 * 1024  # 512 MiB per OCI layer
 # followed immediately by n_raw_bytes of raw data.
 #
 # The stream ends with a single 4-byte LZFSE_ENDOFSTREAM_MAGIC word.
+#
+# IMPORTANT — block size:
+# Apple's Compression framework processes data in 65536-byte (64 KiB) blocks
+# internally, matching the default ``bufferCapacity`` of ``OutputFilter``.
+# tart's pull path uses ``OutputFilter(.decompress, using: .lz4,
+# bufferCapacity: 4 MiB)``, meaning it allocates a 4 MiB output buffer and
+# calls ``LZ4_decompress_safe`` once per block.  If a block's
+# ``n_raw_bytes`` exceeds the output-buffer size the call fails with
+# ``Compression.FilterError``.  We therefore cap each block at
+# APPLE_LZ4_BLOCK_SIZE bytes to stay well within that limit.
 # ---------------------------------------------------------------------------
 LZ4_BLOCK_MAGIC = 0x184D2204
 LZFSE_UNCOMPRESSED_MAGIC = 0x2D787662
 LZFSE_ENDOFSTREAM_MAGIC = 0x24787662
+
+# Maximum uncompressed bytes per Apple LZ4 block.  This matches Apple's
+# Compression framework's default ``OutputFilter`` ``bufferCapacity``.
+APPLE_LZ4_BLOCK_SIZE = 65536
 
 
 # ---------------------------------------------------------------------------
@@ -96,25 +110,39 @@ def apple_lz4_compress(data: bytes) -> bytes:
     framework (``OutputFilter(.decompress, using: .lz4)``), which is what
     tart uses when pulling disk layers.
 
-    The raw LZ4 block compression is delegated to the ``lz4`` Python library
-    (``lz4.block.compress``), and the result is wrapped in Apple's framing.
-    If LZ4 compression would increase the data size, an uncompressed block is
-    emitted instead.
-    """
-    compressed = lz4.block.compress(data, store_size=False)
+    The input is split into ``APPLE_LZ4_BLOCK_SIZE``-byte (64 KiB) blocks.
+    Each block is compressed independently with the ``lz4`` Python library
+    (``lz4.block.compress``) and wrapped in an Apple LZ4 block header.
+    If LZ4 would increase a block's size, an uncompressed block is emitted
+    for that block instead.  A single end-of-stream marker follows the last
+    block.
 
-    if len(compressed) < len(data):
-        # LZ4-compressed block
-        header = struct.pack("<III", LZ4_BLOCK_MAGIC, len(data), len(compressed))
-        payload = header + compressed
-    else:
-        # Uncompressed block — LZ4 did not help
-        header = struct.pack("<II", LZFSE_UNCOMPRESSED_MAGIC, len(data))
-        payload = header + data
+    Using the same 64 KiB block size as Apple's Compression framework is
+    required for compatibility: tart's pull path uses
+    ``OutputFilter(.decompress, using: .lz4, bufferCapacity: 4 MiB)`` which
+    internally passes the block's ``n_raw_bytes`` as the destination-buffer
+    size to ``LZ4_decompress_safe``.  A single oversized block (e.g. one
+    covering an entire 512 MiB OCI layer) would exceed that buffer and cause
+    ``Compression.FilterError``.
+    """
+    payload = bytearray()
+
+    for block_start in range(0, len(data), APPLE_LZ4_BLOCK_SIZE):
+        block = data[block_start:block_start + APPLE_LZ4_BLOCK_SIZE]
+        compressed = lz4.block.compress(block, store_size=False)
+
+        if len(compressed) < len(block):
+            # LZ4-compressed block
+            payload += struct.pack("<III", LZ4_BLOCK_MAGIC, len(block), len(compressed))
+            payload += compressed
+        else:
+            # Uncompressed block — LZ4 did not help
+            payload += struct.pack("<II", LZFSE_UNCOMPRESSED_MAGIC, len(block))
+            payload += block
 
     # Append end-of-stream marker
     payload += struct.pack("<I", LZFSE_ENDOFSTREAM_MAGIC)
-    return payload
+    return bytes(payload)
 
 
 def parse_reference(reference: str) -> tuple:
