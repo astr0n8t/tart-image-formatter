@@ -1,5 +1,7 @@
 # tart-image-formatter
 
+*vibe coded in 3 shots*
+
 A Python tool that takes a raw disk image file and a `config.json` and
 pushes them to an OCI registry in a format that is fully compatible with
 [Cirrus Labs' tart](https://github.com/cirruslabs/tart) macOS virtualisation
